@@ -1,281 +1,53 @@
 const express = require('express');
-const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DATA_DIR = path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'finance.json');
-
-const defaultCategories = [
-  'Salary',
-  'Freelance',
-  'Grocery',
-  'Rent',
-  'Utilities',
-  'Transport',
-  'Dining',
-  'Entertainment',
-  'Health',
-  'Education',
-  'Savings',
-  'Other'
-];
-
-function ensureDataFile() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  if (!fs.existsSync(DATA_FILE)) {
-    const initialData = {
-      categories: defaultCategories,
-      transactions: [
-        {
-          id: 'sample-1',
-          type: 'income',
-          category: 'Salary',
-          amount: 4200,
-          description: 'Monthly salary',
-          date: new Date().toISOString().slice(0, 10)
-        },
-        {
-          id: 'sample-2',
-          type: 'expense',
-          category: 'Rent',
-          amount: 1200,
-          description: 'Apartment rent',
-          date: new Date().toISOString().slice(0, 10)
-        },
-        {
-          id: 'sample-3',
-          type: 'expense',
-          category: 'Grocery',
-          amount: 340,
-          description: 'Weekly groceries',
-          date: new Date().toISOString().slice(0, 10)
-        }
-      ]
-    };
-
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initialData, null, 2));
-  }
-}
-
-function readData() {
-  ensureDataFile();
-  const raw = fs.readFileSync(DATA_FILE, 'utf8');
-  const parsed = JSON.parse(raw || '{}');
-
-  return {
-    categories: Array.isArray(parsed.categories) && parsed.categories.length
-      ? parsed.categories
-      : defaultCategories,
-    transactions: Array.isArray(parsed.transactions) ? parsed.transactions : []
-  };
-}
-
-function writeData(data) {
-  ensureDataFile();
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-function generateId() {
-  return `txn-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-}
-
-function sortTransactions(transactions) {
-  return [...transactions].sort((a, b) => new Date(b.date) - new Date(a.date));
-}
-
-function matchesMonth(transaction, month) {
-  if (!month) return true;
-  return transaction.date && transaction.date.startsWith(month);
-}
-
-function sanitizeTransaction(body) {
-  const type = String(body.type || '').toLowerCase();
-  const category = String(body.category || '').trim();
-  const description = String(body.description || '').trim();
-  const date = String(body.date || '').trim();
-  const amountValue = Number(body.amount);
-
-  if (!['income', 'expense'].includes(type)) {
-    throw new Error('Transaction type must be income or expense.');
-  }
-
-  if (!category) {
-    throw new Error('Category is required.');
-  }
-
-  if (!description) {
-    throw new Error('Description is required.');
-  }
-
-  if (!date || Number.isNaN(new Date(date).getTime())) {
-    throw new Error('Valid date is required.');
-  }
-
-  if (!Number.isFinite(amountValue) || amountValue <= 0) {
-    throw new Error('Amount must be greater than zero.');
-  }
-
-  return {
-    type,
-    category,
-    amount: Number(amountValue.toFixed(2)),
-    description,
-    date
-  };
-}
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-in-production';
+const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false } }) : null;
 
 app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Finance tracker API is running.' });
-});
+const schema = `
+CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS categories (id BIGSERIAL PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, UNIQUE(user_id, name));
+CREATE TABLE IF NOT EXISTS transactions (id UUID PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL CHECK(type IN ('income','expense')), category TEXT NOT NULL, amount NUMERIC(12,2) NOT NULL CHECK(amount > 0), description TEXT NOT NULL, date DATE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS recurring_transactions (id UUID PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL CHECK(type IN ('income','expense')), category TEXT NOT NULL, amount NUMERIC(12,2) NOT NULL CHECK(amount > 0), description TEXT NOT NULL, frequency TEXT NOT NULL CHECK(frequency IN ('weekly','monthly','yearly')), next_date DATE NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+`;
+const defaults = ['Salary','Freelance','Grocery','Rent','Utilities','Transport','Dining','Entertainment','Health','Education','Savings','Other'];
+const id = () => crypto.randomUUID();
+const dateOnly = (value) => String(value || '').slice(0, 10);
+function token(user) { return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' }); }
+function auth(req, res, next) { try { req.user = jwt.verify(req.cookies.finance_token || (req.headers.authorization || '').replace('Bearer ', ''), JWT_SECRET); next(); } catch { res.status(401).json({ error: 'Authentication required.' }); } }
+function payload(body) { const type = String(body.type || '').toLowerCase(), category = String(body.category || '').trim(), description = String(body.description || '').trim(), date = dateOnly(body.date), amount = Number(body.amount); if (!['income','expense'].includes(type) || !category || !description || !/^\\d{4}-\\d{2}-\\d{2}$/.test(date) || !Number.isFinite(amount) || amount <= 0) throw Error('Type, category, description, valid date, and positive amount are required.'); return { type, category, description, date, amount: amount.toFixed(2) }; }
+async function run(sql, params = []) { if (!pool) throw Error('DATABASE_URL is not configured.'); return pool.query(sql, params); }
+async function seedCategories(userId) { await run('INSERT INTO categories(user_id,name) SELECT $1,x FROM unnest($2::text[]) x ON CONFLICT DO NOTHING', [userId, defaults]); }
+async function materializeRecurring(userId) { const result = await run('SELECT * FROM recurring_transactions WHERE user_id=$1 AND active=true AND next_date <= CURRENT_DATE', [userId]); for (const r of result.rows) { let next = new Date(r.next_date); while (next <= new Date()) { await run('INSERT INTO transactions(id,user_id,type,category,amount,description,date) VALUES($1,$2,$3,$4,$5,$6,$7)', [id(), r.user_id, r.type, r.category, r.amount, r.description, dateOnly(next.toISOString())]); if (r.frequency === 'weekly') next.setDate(next.getDate() + 7); else if (r.frequency === 'monthly') next.setMonth(next.getMonth() + 1); else next.setFullYear(next.getFullYear() + 1); } await run('UPDATE recurring_transactions SET next_date=$1 WHERE id=$2', [dateOnly(next.toISOString()), r.id]); } }
 
-app.get('/api/categories', (req, res) => {
-  const { categories } = readData();
-  res.json(categories);
-});
+app.get('/api/health', async (req, res) => { try { await run('SELECT 1'); res.json({ status: 'ok', database: 'connected' }); } catch (e) { res.status(503).json({ status: 'error', error: e.message }); } });
+app.post('/api/auth/register', async (req,res) => { try { const email = String(req.body.email || '').trim().toLowerCase(); const password = String(req.body.password || ''); if (!/^\\S+@\\S+\\.\\S+$/.test(email) || password.length < 8) return res.status(400).json({error:'Use a valid email and password of at least 8 characters.'}); const user = { id:id(), email }; await run('INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)', [user.id,email,await bcrypt.hash(password,12)]); await seedCategories(user.id); res.cookie('finance_token', token(user), { httpOnly:true, sameSite:'lax', secure:process.env.NODE_ENV==='production', maxAge:604800000 }); res.status(201).json({ id:user.id,email }); } catch(e) { res.status(e.code==='23505'?409:500).json({error:e.code==='23505'?'Email is already registered.':e.message}); } });
+app.post('/api/auth/login', async (req,res) => { try { const email=String(req.body.email||'').trim().toLowerCase(); const r=await run('SELECT * FROM users WHERE email=$1',[email]); if(!r.rows[0] || !(await bcrypt.compare(String(req.body.password||''),r.rows[0].password_hash))) return res.status(401).json({error:'Invalid email or password.'}); const user=r.rows[0]; await seedCategories(user.id); await materializeRecurring(user.id); res.cookie('finance_token',token(user),{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:604800000}); res.json({id:user.id,email:user.email}); } catch(e){res.status(500).json({error:e.message});} });
+app.post('/api/auth/logout',(req,res)=>{res.clearCookie('finance_token');res.json({success:true});});
+app.get('/api/auth/me',auth,(req,res)=>res.json({id:req.user.id,email:req.user.email}));
 
-app.post('/api/categories', (req, res) => {
-  const { categories } = readData();
-  const nextCategory = String(req.body?.name || '').trim();
-
-  if (!nextCategory) {
-    return res.status(400).json({ error: 'Category name is required.' });
-  }
-
-  const normalized = nextCategory.trim();
-  if (categories.includes(normalized)) {
-    return res.status(409).json({ error: 'Category already exists.' });
-  }
-
-  const updated = [...categories, normalized];
-  const data = readData();
-  data.categories = updated;
-  writeData(data);
-
-  res.status(201).json({ name: normalized, categories: updated });
-});
-
-app.get('/api/transactions', (req, res) => {
-  const { type, category, month, search } = req.query;
-  const data = readData();
-
-  let transactions = data.transactions.filter((transaction) => {
-    if (month && !matchesMonth(transaction, month)) return false;
-    if (type && transaction.type !== String(type).toLowerCase()) return false;
-    if (category && transaction.category !== String(category)) return false;
-    if (search) {
-      const query = String(search).toLowerCase();
-      const haystack = `${transaction.description} ${transaction.category} ${transaction.type}`.toLowerCase();
-      if (!haystack.includes(query)) return false;
-    }
-    return true;
-  });
-
-  transactions = sortTransactions(transactions);
-  res.json(transactions);
-});
-
-app.get('/api/summary', (req, res) => {
-  const { month } = req.query;
-  const data = readData();
-  const targetMonth = month || new Date().toISOString().slice(0, 7);
-
-  const filtered = data.transactions.filter((transaction) => matchesMonth(transaction, targetMonth));
-  const totalIncome = filtered
-    .filter((entry) => entry.type === 'income')
-    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
-
-  const totalExpense = filtered
-    .filter((entry) => entry.type === 'expense')
-    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
-
-  const balance = totalIncome - totalExpense;
-
-  const categoryTotals = filtered.reduce((acc, entry) => {
-    const key = entry.category;
-    acc[key] = (acc[key] || 0) + Number(entry.amount || 0);
-    return acc;
-  }, {});
-
-  const categories = Object.entries(categoryTotals)
-    .sort((a, b) => b[1] - a[1])
-    .map(([name, total]) => ({ name, total }));
-
-  res.json({
-    month: targetMonth,
-    totalIncome,
-    totalExpense,
-    balance,
-    categories,
-    transactionCount: filtered.length
-  });
-});
-
-app.post('/api/transactions', (req, res) => {
-  try {
-    const data = readData();
-    const payload = sanitizeTransaction(req.body);
-
-    const transaction = {
-      id: generateId(),
-      ...payload
-    };
-
-    data.transactions = sortTransactions([transaction, ...data.transactions]);
-    writeData(data);
-
-    res.status(201).json(transaction);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.put('/api/transactions/:id', (req, res) => {
-  try {
-    const { id } = req.params;
-    const data = readData();
-    const payload = sanitizeTransaction(req.body);
-    const index = data.transactions.findIndex((transaction) => transaction.id === id);
-
-    if (index === -1) {
-      return res.status(404).json({ error: 'Transaction not found.' });
-    }
-
-    data.transactions[index] = { ...data.transactions[index], ...payload };
-    data.transactions = sortTransactions(data.transactions);
-    writeData(data);
-
-    res.json(data.transactions[index]);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.delete('/api/transactions/:id', (req, res) => {
-  const { id } = req.params;
-  const data = readData();
-  const originalLength = data.transactions.length;
-  data.transactions = data.transactions.filter((transaction) => transaction.id !== id);
-
-  if (data.transactions.length === originalLength) {
-    return res.status(404).json({ error: 'Transaction not found.' });
-  }
-
-  writeData(data);
-  res.json({ success: true, deletedId: id });
-});
-
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-app.listen(PORT, () => {
-  console.log(`Finance app running at http://localhost:${PORT}`);
-});
+app.get('/api/categories',auth,async(req,res)=>{ const r=await run('SELECT name FROM categories WHERE user_id=$1 ORDER BY name',[req.user.id]); res.json(r.rows.map(x=>x.name)); });
+app.post('/api/categories',auth,async(req,res)=>{ const name=String(req.body.name||'').trim(); if(!name)return res.status(400).json({error:'Name required.'}); try {await run('INSERT INTO categories(user_id,name) VALUES($1,$2)',[req.user.id,name]);res.status(201).json({name});}catch(e){res.status(409).json({error:'Category already exists.'});} });
+app.get('/api/transactions',auth,async(req,res)=>{await materializeRecurring(req.user.id);const p=[req.user.id],where=['user_id=$1']; if(req.query.month){p.push(req.query.month);where.push(`to_char(date,'YYYY-MM')=$${p.length}`);} if(req.query.search){p.push(`%${req.query.search}%`);where.push(`(description ILIKE $${p.length} OR category ILIKE $${p.length})`);} const r=await run(`SELECT id,type,category,amount,description,to_char(date,'YYYY-MM-DD') date FROM transactions WHERE ${where.join(' AND ')} ORDER BY date DESC,created_at DESC`,p);res.json(r.rows);});
+app.get('/api/summary',auth,async(req,res)=>{const month=req.query.month||new Date().toISOString().slice(0,7);const r=await run(`SELECT COALESCE(SUM(amount) FILTER(WHERE type='income'),0) income,COALESCE(SUM(amount) FILTER(WHERE type='expense'),0) expense,COUNT(*) count FROM transactions WHERE user_id=$1 AND to_char(date,'YYYY-MM')=$2`,[req.user.id,month]);const c=await run(`SELECT category,COALESCE(SUM(amount),0) total FROM transactions WHERE user_id=$1 AND type='expense' AND to_char(date,'YYYY-MM')=$2 GROUP BY category ORDER BY total DESC`,[req.user.id,month]);res.json({month,totalIncome:Number(r.rows[0].income),totalExpense:Number(r.rows[0].expense),balance:Number(r.rows[0].income)-Number(r.rows[0].expense),transactionCount:Number(r.rows[0].count),categories:c.rows});});
+app.get('/api/analytics',auth,async(req,res)=>{const r=await run(`SELECT to_char(date,'YYYY-MM') month,type,COALESCE(SUM(amount),0) total FROM transactions WHERE user_id=$1 AND date >= CURRENT_DATE - INTERVAL '12 months' GROUP BY month,type ORDER BY month`,[req.user.id]);res.json(r.rows);});
+app.post('/api/transactions',auth,async(req,res)=>{try{const x=payload(req.body);const r=await run('INSERT INTO transactions(id,user_id,type,category,amount,description,date) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[id(),req.user.id,x.type,x.category,x.amount,x.description,x.date]);res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+app.put('/api/transactions/:id',auth,async(req,res)=>{try{const x=payload(req.body);const r=await run('UPDATE transactions SET type=$1,category=$2,amount=$3,description=$4,date=$5 WHERE id=$6 AND user_id=$7 RETURNING *',[x.type,x.category,x.amount,x.description,x.date,req.params.id,req.user.id]);if(!r.rows[0])return res.status(404).json({error:'Transaction not found.'});res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+app.delete('/api/transactions/:id',auth,async(req,res)=>{const r=await run('DELETE FROM transactions WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.status(r.rowCount?200:404).json({success:!!r.rowCount});});
+app.get('/api/transactions.csv',auth,async(req,res)=>{const r=await run('SELECT to_char(date,\'YYYY-MM-DD\') date,type,category,description,amount FROM transactions WHERE user_id=$1 ORDER BY date DESC',[req.user.id]);const csv=['date,type,category,description,amount',...r.rows.map(x=>[x.date,x.type,x.category,x.description,x.amount].map(v=>`"${String(v).replaceAll('"','""')}"`).join(','))].join('\\n');res.attachment('transactions.csv').type('text/csv').send(csv);});
+app.get('/api/recurring',auth,async(req,res)=>{const r=await run('SELECT * FROM recurring_transactions WHERE user_id=$1 ORDER BY next_date',[req.user.id]);res.json(r.rows);});
+app.post('/api/recurring',auth,async(req,res)=>{try{const x=payload(req.body);const frequency=['weekly','monthly','yearly'].includes(req.body.frequency)?req.body.frequency:null;if(!frequency)throw Error('Frequency must be weekly, monthly, or yearly.');const r=await run('INSERT INTO recurring_transactions(id,user_id,type,category,amount,description,frequency,next_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[id(),req.user.id,x.type,x.category,x.amount,x.description,frequency,x.date]);res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+app.delete('/api/recurring/:id',auth,async(req,res)=>{const r=await run('DELETE FROM recurring_transactions WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.status(r.rowCount?200:404).json({success:!!r.rowCount});});
+app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
+(async()=>{try{await run(schema);app.listen(PORT,()=>console.log(`Finance app running on http://localhost:${PORT}`));}catch(e){console.error('Startup failed:',e.message);process.exit(1);}})();

@@ -1,22 +1,14 @@
 {
   "name": "finance-app-backend",
-  "version": "1.0.0",
-  "description": "Home income and expense tracker web app",
+  "version": "2.0.0",
+  "description": "Authenticated home finance tracker with PostgreSQL persistence",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "keywords": [
-    "finance",
-    "budget",
-    "expenses",
-    "income",
-    "tracker"
-  ],
-  "author": "sramus",
-  "license": "MIT",
+  "scripts": {"start": "node server.js", "dev": "node --watch server.js"},
   "dependencies": {
-    "express": "^4.21.2"
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1"
   }
 }
