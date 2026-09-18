@@ -1,0 +1,22 @@
+{
+  "name": "finance-app-backend",
+  "version": "1.0.0",
+  "description": "Home income and expense tracker web app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "finance",
+    "budget",
+    "expenses",
+    "income",
+    "tracker"
+  ],
+  "author": "sramus",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

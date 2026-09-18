@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Home Finance Tracker</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <h1>Finance Tracker</h1>
+        <nav>
+          <button class="nav active">Dashboard</button>
+          <button class="nav">Transactions</button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Overview</p>
+            <h2>Home Budget</h2>
+          </div>
+          <div class="month-picker-wrap">
+            <label for="monthFilter">Month</label>
+            <input id="monthFilter" type="month" />
+          </div>
+        </header>
+
+        <section class="stats-grid">
+          <article class="stat-card income">
+            <span>Total Income</span>
+            <strong id="incomeTotal">$0.00</strong>
+          </article>
+          <article class="stat-card expense">
+            <span>Total Expenses</span>
+            <strong id="expenseTotal">$0.00</strong>
+          </article>
+          <article class="stat-card balance">
+            <span>Balance</span>
+            <strong id="balanceTotal">$0.00</strong>
+          </article>
+        </section>
+
+        <section class="panel-grid">
+          <div class="panel form-panel">
+            <h3 id="formTitle">Add Transaction</h3>
+            <form id="transactionForm">
+              <input type="hidden" id="transactionId" />
+
+              <div class="field-row">
+                <label>
+                  Type
+                  <select id="type" required>
+                    <option value="income">Income</option>
+                    <option value="expense">Expense</option>
+                  </select>
+                </label>
+
+                <label>
+                  Category
+                  <select id="category" required></select>
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>
+                  Amount
+                  <input id="amount" type="number" min="0.01" step="0.01" placeholder="0.00" required />
+                </label>
+
+                <label>
+                  Date
+                  <input id="date" type="date" required />
+                </label>
+              </div>
+
+              <label>
+                Description
+                <input id="description" type="text" placeholder="Groceries, Salary, Rent..." required />
+              </label>
+
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Save</button>
+                <button type="button" id="cancelEdit" class="secondary-btn hidden">Cancel</button>
+              </div>
+            </form>
+
+            <div class="category-box">
+              <label for="newCategory">Add custom category</label>
+              <div class="category-add-row">
+                <input id="newCategory" type="text" placeholder="Travel, Childcare..." />
+                <button type="button" id="addCategoryBtn" class="secondary-btn">Add</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel summary-panel">
+            <h3>Category Totals</h3>
+            <div id="categoryChart" class="category-chart"></div>
+          </div>
+        </section>
+
+        <section class="panel list-panel">
+          <div class="list-header">
+            <h3>Transactions</h3>
+            <input id="searchInput" type="search" placeholder="Search records" />
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Type</th>
+                  <th>Category</th>
+                  <th>Description</th>
+                  <th>Amount</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="transactionTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
